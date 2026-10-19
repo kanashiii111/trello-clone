@@ -14,5 +14,5 @@
 логи сервиса, который отвечает с ошибкой. Если одновременно горит
 PostgresDown — этот алерт подавлен (inhibit) и причину сразу видно в нём.
 
-**Воспроизвести.** `docker compose stop php` (502) или `docker compose stop postgres`
-(503 — но тогда придёт PostgresDown, а этот алерт будет подавлен).
+**Воспроизвести.** `docker compose stop php` (502; вернуть — `docker compose start php`)
+или `make demo-db-down` (503 — но тогда придёт PostgresDown, а этот алерт будет подавлен).

@@ -15,5 +15,4 @@
 снизить нагрузку или увеличить `pm.max_children` (если хватает CPU/памяти и
 соединений к БД).
 
-**Воспроизвести.** Несколько минут подряд:
-`while true; do curl -s -o /dev/null 'http://127.0.0.1:8080/demo/slow.php?seconds=1.5'; done`.
+**Воспроизвести.** `make demo-slow` (медленные запросы к `/demo/slow.php`).

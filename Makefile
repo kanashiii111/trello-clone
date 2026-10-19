@@ -10,7 +10,8 @@ endif
 .DEFAULT_GOAL := help
 .PHONY: help init build up down ps logs clean composer sh psql \
 	mon-up mon-down mon-ps mon-check mon-reload pg-monitoring \
-	logs-up logs-down
+	logs-up logs-down \
+	demo-db-down demo-db-up demo-load demo-errors demo-slow
 
 # Базовый стек — только compose.yaml. Мониторинг подключается вторым файлом через -f:
 # compose склеивает их в одну модель, сервисы мониторинга попадают в ту же сеть
@@ -21,6 +22,15 @@ COMPOSE_LOG = $(COMPOSE_MON) -f compose.logging.yaml
 # Все файлы и все профили сразу — для down/clean. Иначе `make down` после `make mon-up`
 # оставил бы контейнеры мониторинга «сиротами» в сети, и удаление сети упало бы
 COMPOSE_ALL = $(COMPOSE_LOG) --profile '*'
+# Генератор нагрузки k6 в контейнере (профиль tools). Все файлы compose — чтобы не было
+# предупреждений про «осиротевшие» контейнеры, если поднят Graylog; --no-deps — k6
+# ничего не запускает сам, работает с тем, что уже поднято
+K6 = $(COMPOSE_LOG) --profile tools run --rm --no-deps -e VUS -e DURATION k6 run --quiet
+
+# Адреса UI для подсказок в демо-целях
+MAILPIT_URL    = http://127.0.0.1:$(or $(MAILPIT_PORT),8025)
+GRAFANA_URL    = http://127.0.0.1:$(or $(GRAFANA_PORT),3000)
+PROMETHEUS_URL = http://127.0.0.1:$(or $(PROMETHEUS_PORT),9090)
 
 help:
 	@echo "make init      — создать .env из .env.example (с UID/GID текущего пользователя)"
@@ -45,6 +55,13 @@ help:
 	@echo "Логи (Graylog, нужно ~3 ГБ RAM для Docker):"
 	@echo "make logs-up   — база + мониторинг + Graylog, логи nginx/php/postgres уходят в Graylog"
 	@echo "make logs-down — убрать Graylog, мониторинг и база остаются"
+	@echo ""
+	@echo "Сценарии для лекции (нужен make mon-up или make logs-up):"
+	@echo "make demo-db-down — остановить PostgreSQL: 503 на health, письмо PostgresDown (~1 мин)"
+	@echo "make demo-db-up   — вернуть PostgreSQL, письмо RESOLVED"
+	@echo "make demo-load    — нагрузка k6 сверх пула php-fpm: очередь, p99, PhpFpmPoolSaturated (~5 мин)"
+	@echo "make demo-errors  — всплеск ошибок (без алерта), затем поток 5xx: HighErrorRate (~6 мин)"
+	@echo "make demo-slow    — медленные запросы к БД: latency, slow-log, pg_stat_statements (~4 мин)"
 
 # Создаёт .env из примера и подставляет реальные UID/GID текущего пользователя,
 # чтобы файлы, которые php-fpm пишет в bind mount (например app/vendor), на Linux-хосте
@@ -141,3 +158,49 @@ logs-up:
 logs-down:
 	$(COMPOSE_LOG) rm -sf $$($(COMPOSE_LOG) config --services | grep -vxF "$$($(COMPOSE_MON) config --services)")
 	$(COMPOSE_MON) up -d
+
+# --- Сценарии для лекции -------------------------------------------------------
+# Каждый печатает, куда смотреть, — алерты приходят не сразу (for + group_wait),
+# и это часть демонстрации
+
+demo-db-down:
+	$(COMPOSE) stop postgres
+	@echo ""
+	@echo "PostgreSQL остановлен. Что смотреть:"
+	@echo "  curl -i http://127.0.0.1:$(or $(NGINX_PORT),8080)/health.php   — 503, database: fail"
+	@echo "  $(PROMETHEUS_URL)/alerts — PostgresDown: pending → firing (for: 30s); HealthCheckFailing тоже (for: 1m)"
+	@echo "  $(MAILPIT_URL) — через ~1 мин письмо [FIRING] PostgresDown;"
+	@echo "    письма HealthCheckFailing НЕ будет: его подавляет inhibit_rules в Alertmanager"
+	@echo "Вернуть: make demo-db-up"
+
+demo-db-up:
+	$(COMPOSE) start postgres
+	@echo "PostgreSQL запущен. Через 1–2 минуты в $(MAILPIT_URL) придёт [RESOLVED] PostgresDown"
+
+demo-load:
+	@echo "Нагрузка на 5 мин: 20 параллельных пользователей против 5 воркеров php-fpm."
+	@echo "Смотреть: $(GRAFANA_URL) — «Воркеры php-fpm», «Очередь», «Время ответа проб»;"
+	@echo "через ~2.5 мин письмо PhpFpmPoolSaturated в $(MAILPIT_URL). Остановить — Ctrl+C."
+	$(K6) /scripts/load.js
+
+demo-errors:
+	@echo "~6 мин: 30 с всплеск ошибок → 90 с пауза → 4 мин устойчивых 30% ошибок."
+	@echo "Смотреть: $(PROMETHEUS_URL)/alerts — HighErrorRate после всплеска только pending, писем нет;"
+	@echo "на устойчивых ошибках через ~2.5 мин firing и письмо в $(MAILPIT_URL)."
+	$(K6) /scripts/errors.js
+
+demo-slow:
+	@echo "4 мин медленных запросов (pg_sleep 1.5 с). Смотреть: $(GRAFANA_URL) — p95 по route,"
+	@echo "топ запросов pg_stat_statements; HighLatencyP95 в $(MAILPIT_URL) через ~3.5 мин;"
+	@echo "в Graylog (если make logs-up): tag:*postgres* AND duration"
+	$(K6) /scripts/slow.js
+	@echo ""
+	@echo "Топ запросов приложения по среднему времени (pg_stat_statements):"
+	@# Только запросы пользователя приложения (без экспортера), повторявшиеся больше
+	@# одного раза (без разовых CREATE из initdb); переводы строк — в пробелы
+	@$(COMPOSE) exec -T postgres psql -U $(POSTGRES_USER) -d $(POSTGRES_DB) -c \
+		"SELECT calls, round(mean_exec_time) AS mean_ms, round(total_exec_time) AS total_ms, \
+		        left(regexp_replace(query, '\s+', ' ', 'g'), 60) AS query \
+		 FROM pg_stat_statements \
+		 WHERE userid = (SELECT oid FROM pg_roles WHERE rolname = current_user) AND calls > 1 \
+		 ORDER BY mean_exec_time DESC LIMIT 5;"

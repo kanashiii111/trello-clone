@@ -212,6 +212,21 @@ services:
       start_period: 5s
     restart: unless-stopped
 
+  # Генератор нагрузки для демо-сценариев (`make demo-load` и др.). Запускается
+  # только через `docker compose run` (профиль tools не активен при `up`) и живёт,
+  # пока идёт сценарий, — поэтому, как и graylog-init, без healthcheck и restart.
+  # Из docker-сети ходит на nginx по имени — на хост k6 ставить не нужно
+  k6:
+    image: grafana/k6:2.3.0
+    profiles: ["tools"]
+    volumes:
+      - ./scripts/k6:/scripts:ro
+    environment:
+      BASE_URL: http://nginx
+    # Команда по умолчанию безобидна; сценарий передаётся явно:
+    #   docker compose ... --profile tools run --rm k6 run /scripts/load.js
+    command: ["version"]
+
   # Метрики контейнеров (CPU/память/сеть каждого контейнера). Необязателен:
   # включается через COMPOSE_PROFILES=cadvisor. На Linux работает полноценно;
   # на Docker Desktop (macOS/Windows) Docker живёт в виртуалке, и cAdvisor видит

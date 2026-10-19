@@ -16,4 +16,4 @@ PostgreSQL (`pg_up == 0`). Приложение без БД не работае�
 - Не стартует после правки конфига — откатить `docker/postgres/postgresql.conf`.
 - Кончилось место на диске/томе — освободить место (`docker system df`).
 
-**Воспроизвести.** `docker compose stop postgres`, вернуть — `docker compose start postgres`.
+**Воспроизвести.** `make demo-db-down`, вернуть — `make demo-db-up`.

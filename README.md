@@ -25,6 +25,9 @@ make init && make up && make composer
 
 Остальные команды — в `make help`.
 
+Мониторинг, алерты и логи подключаются поверх базы (`make mon-up`,
+`make logs-up`) — см. раздел [«Мониторинг и логи»](#мониторинг-и-логи).
+
 ## Когда пересобирать, а когда достаточно F5 или restart
 
 - **Правки в `app/`** (PHP-код) — видны сразу, без пересборки и рестарта.
@@ -68,21 +71,84 @@ make pg-monitoring
 Она перезапускает postgres (`shared_preload_libraries` читается только при
 старте сервера) и выполняет тот же скрипт. Повторный запуск безопасен.
 
-## Мониторинг
+## Мониторинг и логи
 
-Prometheus и экспортеры описаны в отдельном `compose.monitoring.yaml` и
-подключаются поверх базового стека — `make up` без мониторинга остаётся лёгким.
+Стенд поднимается уровнями — каждый следующий добавляется поверх предыдущего
+отдельным compose-файлом через `-f`, базовый `make up` остаётся лёгким:
+
+| Уровень | Команда | Что добавляется | Память (в простое) | Образы |
+|---|---|---|---|---|
+| База | `make up` | nginx, php-fpm, PostgreSQL | ~60 МБ | ~1,6 ГБ |
+| + мониторинг | `make mon-up` | Prometheus, экспортеры, blackbox, Grafana, Alertmanager, Mailpit | +~0,5 ГБ | +~2,5 ГБ |
+| + логи | `make logs-up` | Graylog, MongoDB, OpenSearch | +~2,2 ГБ | +~4,7 ГБ |
+
+Память замерена `docker stats` на стенде без нагрузки; под нагрузкой и при
+первом старте JVM-сервисов (Graylog, OpenSearch) — больше. Для уровня «логи»
+выделите Docker не меньше 6 ГБ RAM. Образы скачиваются при первом
+`make mon-up` / `make logs-up` — на паре лучше скачать заранее.
 
 ```bash
-make mon-up      # база + Prometheus и экспортеры
-make mon-down    # убрать мониторинг, приложение продолжит работать
+make mon-up      # база + мониторинг
+make mon-down    # убрать мониторинг (и логи), приложение продолжит работать
+make logs-up     # база + мониторинг + Graylog
+make logs-down   # убрать Graylog, мониторинг остаётся
 ```
 
-- Grafana — http://127.0.0.1:3000/ — сразу открывается дашборд «Обзор сервиса»
-  (анонимный просмотр). Для правки — вход `admin` / `admin` (из `.env`).
+### Схема
+
+```mermaid
+flowchart TB
+    user([Браузер / curl]) -->|:8080| nginx
+
+    subgraph app[База — compose.yaml]
+        nginx -->|FastCGI| php[php-fpm]
+        php -->|SQL| postgres[(PostgreSQL)]
+    end
+
+    subgraph mon[Мониторинг — compose.monitoring.yaml]
+        prometheus[Prometheus]
+        nginxexp[nginx-exporter] -->|stub_status :8081| nginx
+        fpmexp[php-fpm-exporter] -->|FastCGI /status| php
+        pgexp[postgres-exporter] --> postgres
+        blackbox[blackbox-exporter] -->|HTTP-пробы| nginx
+        prometheus -->|scrape| nginxexp & fpmexp & pgexp & blackbox
+        prometheus -->|/metrics.php :8081| nginx
+        prometheus -->|алерты| alertmanager[Alertmanager] -->|SMTP| mailpit[Mailpit]
+        grafana[Grafana] -->|PromQL| prometheus
+    end
+
+    subgraph logs[Логи — compose.logging.yaml]
+        graylog[Graylog] --> opensearch[(OpenSearch)]
+        graylog --> mongodb[(MongoDB)]
+    end
+
+    docker{{Docker daemon<br/>logging driver gelf}} -.->|GELF UDP :12201| graylog
+    nginx & php & postgres -.->|stdout/stderr| docker
+    grafana -.->|логи| opensearch
+```
+
+### Адреса и логины
+
+Все порты опубликованы только на `127.0.0.1`; номера и пароли — в `.env`
+(значения по умолчанию — в `.env.example`).
+
+| Сервис | Адрес | Вход |
+|---|---|---|
+| Приложение | http://127.0.0.1:8080/ | — |
+| Grafana | http://127.0.0.1:3000/ | просмотр без входа; правка — `admin` / `admin` |
+| Prometheus | http://127.0.0.1:9090/ | — |
+| Alertmanager | http://127.0.0.1:9093/ | — |
+| Mailpit (письма алертов) | http://127.0.0.1:8025/ | — |
+| Graylog | http://127.0.0.1:9000/ | `admin` / `admin` |
+| cAdvisor (необязательно) | http://127.0.0.1:8088/ | — |
+| PostgreSQL | `127.0.0.1:5432` | из `.env` |
+
+Экспортеры, OpenSearch и MongoDB наружу не публикуются — к ним ходят только
+другие контейнеры изнутри docker-сети.
+
+### Prometheus и экспортеры
+
 - Prometheus — http://127.0.0.1:9090/ (Status → Targets: все должны быть `UP`).
-- Alertmanager — http://127.0.0.1:9093/, письма алертов — в Mailpit
-  http://127.0.0.1:8025/ (локальный SMTP, наружу ничего не уходит).
 - Экспортеры наружу не публикуются: их опрашивает только Prometheus изнутри
   docker-сети. `stub_status` nginx живёт на внутреннем порту 8081, статус пула
   php-fpm (`/status`) читается напрямую по FastCGI.
@@ -187,7 +253,7 @@ UI — http://127.0.0.1:8088/. На Linux работает полноценно.
 (диски, файловые системы) может отсутствовать. Метрики по контейнерам при этом
 есть. Без профиля Prometheus просто не находит cAdvisor и не считает его упавшим.
 
-## Логи (Graylog)
+### Логи (Graylog)
 
 Централизованные логи — отдельный, самый тяжёлый уровень стенда
 (`compose.logging.yaml`): Graylog 7.2 + MongoDB 8.0 + OpenSearch 3.7
@@ -253,6 +319,74 @@ curl -si 'http://127.0.0.1:8080/demo/slow.php?seconds=1' | grep -i x-request-id
 В Grafana под логированием появляется второй datasource — **Graylog (OpenSearch)**
 (встроенный плагин Elasticsearch, без скачивания плагинов). В Explore можно
 открыть рядом метрики и логи за один интервал.
+
+### Сценарии для лекции
+
+Нужен поднятый мониторинг (`make mon-up`), для сценария 3 — лучше и логи
+(`make logs-up`). Нагрузку даёт k6 в контейнере (`scripts/k6/`), на хост
+ничего ставить не нужно. Каждая цель печатает, куда смотреть. Алерты приходят
+не сразу — `for` и группировка в Alertmanager тоже часть рассказа.
+
+1. **БД упала** — `make demo-db-down`. `health.php` отдаёт 503, black-box проба
+   падает, через ~1 мин в Mailpit приходит `[FIRING] PostgresDown`. Письма о
+   HealthCheckFailing нет — его подавляет `inhibit_rules` (в Alertmanager он
+   виден как suppressed). `make demo-db-up` — через 1–2 мин `[RESOLVED]`.
+2. **Пул php-fpm на пределе** — `make demo-load` (~5 мин). 20 пользователей
+   против 5 воркеров: на дашборде active упирается в 5, растёт очередь, растёт
+   время ответа проб и p95/p99 в итоге k6. Через ~2,5 мин — `PhpFpmPoolSaturated`.
+   Обратите внимание: p95 из метрик PHP почти не меняется — время в очереди
+   PHP не видит, его видно только снаружи.
+3. **Медленный запрос к БД** — `make demo-slow` (~4 мин). Видно в Grafana
+   (p95 по route `/demo/slow.php`, топ запросов из pg_stat_statements), в
+   Graylog (`tag:*postgres* AND duration`; по `request_id` из строки nginx
+   находится вся цепочка), в `pg_stat_statements` (цель печатает топ в конце).
+   Через ~3,5 мин — `HighLatencyP95`.
+4. **Поток ошибок и роль `for`** — `make demo-errors` (~6 мин). Сначала 30 с
+   сплошных ошибок: HighErrorRate только pending и гаснет, письма нет. Потом
+   4 мин 30% ошибок: через ~2,5 мин firing и письмо, после — RESOLVED.
+
+Параметры нагрузки можно подкрутить: `VUS=40 DURATION=6m make demo-load`.
+
+### Troubleshooting
+
+- **Target в Prometheus `DOWN`.** Status → Targets показывает ошибку. `no such
+  host` — контейнер не запущен (`make mon-ps`); `connection refused` —
+  запущен, но не слушает (логи сервиса). После правки `prometheus.yml` или
+  правил — `make mon-check`, затем `make mon-reload`.
+- **Нет метрик PostgreSQL, `pg_up = 0` при живой БД.** Окружение поднималось
+  до появления мониторинга, и пользователя экспортера нет —
+  `make pg-monitoring` (см. «Ловушка: initdb…»).
+- **`/metrics.php` отдаёт 404.** Снаружи (:8080) так и задумано. Изнутри
+  (`docker compose exec nginx curl -s http://localhost:8081/metrics.php`)
+  — метрики выключены: поднимите стек через `make mon-up`, а не `make up`.
+- **502 или зависший запрос сразу после `make mon-up`/`mon-down`/`logs-up`.**
+  Эти команды пересоздают контейнер php, а nginx ещё до 10 секунд держит в
+  кэше DNS его старый IP (`resolver ... valid=10s` в `default.conf`).
+  Подождите и повторите.
+- **Письма не приходят.** Цепочка: Prometheus → Alerts (алерт firing, а не
+  pending?) → Alertmanager http://127.0.0.1:9093 (алерт есть? не silenced и не
+  suppressed?) → Mailpit. Помните про `for`, `group_wait` (15 с) и
+  `group_interval` (1 мин): от начала проблемы до письма проходит 1–3 минуты.
+- **Graylog не стартует или долго в `starting`.** Почти всегда не хватает
+  памяти: `docker stats`, логи `opensearch` и `graylog`. Выделите Docker
+  больше RAM (≥ 6 ГБ). Первый старт — 2–4 минуты.
+- **В Graylog нет сообщений.** System → Inputs: «GELF UDP (Docker)» должен быть
+  RUNNING; если inputs нет — `make logs-up` ещё раз (graylog-init
+  идемпотентен). Логи шлёт Docker daemon на `127.0.0.1:12201/udp`, поэтому
+  порт должен быть опубликован и не занят на хосте.
+- **Поиск `tag:*nginx*` выдаёт ошибку** — проверьте, что Graylog поднят из
+  этого `compose.logging.yaml` (там включены wildcard в начале слова).
+- **cAdvisor без имён контейнеров** — на Docker Desktop работает ограниченно,
+  см. «cAdvisor (необязательно)».
+
+### Что дальше: трейсинг
+
+Метрики отвечают на «что и насколько плохо», логи — «что именно случилось
+в конкретном запросе». Третий столп наблюдаемости — **трейсинг**: путь одного
+запроса через все сервисы с длительностью каждого шага (nginx → PHP → SQL).
+Наш `request_id` — его упрощённая версия для одного сервиса. Следующий шаг —
+OpenTelemetry (SDK в приложении + OpenTelemetry Collector) и хранилище трейсов
+вроде Grafana Tempo или Jaeger; в этот стенд намеренно не включён.
 
 ## Linux / macOS / Windows (WSL2)
 
