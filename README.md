@@ -53,6 +53,47 @@ make clean && make up
 
 Это удалит все данные в PostgreSQL.
 
+То же касается мониторинга: `initdb/02-monitoring.sh` создаёт пользователя
+для postgres-exporter и extension `pg_stat_statements` только на свежем томе.
+Если окружение поднималось до появления мониторинга, данные терять не нужно —
+есть идемпотентная цель:
+
+```bash
+make pg-monitoring
+```
+
+Она перезапускает postgres (`shared_preload_libraries` читается только при
+старте сервера) и выполняет тот же скрипт. Повторный запуск безопасен.
+
+## Мониторинг
+
+Prometheus и экспортеры описаны в отдельном `compose.monitoring.yaml` и
+подключаются поверх базового стека — `make up` без мониторинга остаётся лёгким.
+
+```bash
+make mon-up      # база + Prometheus и экспортеры
+make mon-down    # убрать мониторинг, приложение продолжит работать
+```
+
+- Prometheus — http://127.0.0.1:9090/ (Status → Targets: все должны быть `UP`).
+- Экспортеры наружу не публикуются: их опрашивает только Prometheus изнутри
+  docker-сети. `stub_status` nginx живёт на внутреннем порту 8081, статус пула
+  php-fpm (`/status`) читается напрямую по FastCGI.
+
+### cAdvisor (необязательно)
+
+Метрики CPU/памяти/сети по каждому контейнеру. Включается профилем:
+
+```bash
+COMPOSE_PROFILES=cadvisor make mon-up
+```
+
+UI — http://127.0.0.1:8088/. На Linux работает полноценно. На Docker Desktop
+(macOS, Windows/WSL2) Docker живёт внутри виртуальной машины, и cAdvisor видит
+её, а не ваш компьютер: метрики «хоста» — это метрики VM, а часть метрик
+(диски, файловые системы) может отсутствовать. Метрики по контейнерам при этом
+есть. Без профиля Prometheus просто не находит cAdvisor и не считает его упавшим.
+
 ## Linux / macOS / Windows (WSL2)
 
 `make init` подставляет в `.env` реальные UID/GID текущего пользователя, а
@@ -86,5 +127,8 @@ app/            — код приложения (PSR-4 автозагрузка 
 docker/nginx/   — Dockerfile + конфиг nginx
 docker/php/     — Dockerfile + php.ini + пул php-fpm (www.conf)
 docker/postgres/— Dockerfile + postgresql.conf + init-скрипты
+docker/prometheus/ — конфиг Prometheus
+docker/nginx-exporter/ — тонкая обёртка над образом экспортера (wget для healthcheck)
 compose.yaml    — оркестрация; значения по умолчанию — в .env.example
+compose.monitoring.yaml — стек мониторинга, подключается через -f
 ```

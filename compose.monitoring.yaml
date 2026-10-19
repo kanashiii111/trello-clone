@@ -1,0 +1,138 @@
+# Стек мониторинга. Подключается поверх базового compose.yaml:
+#   docker compose -f compose.yaml -f compose.monitoring.yaml up -d   (или `make mon-up`)
+# Отдельный файл — чтобы базовый `make up` оставался лёгким: мониторинг нужен не всегда,
+# а Prometheus и экспортеры тоже едят память и CPU.
+#
+# Сервисы попадают в ту же сеть по умолчанию, что и nginx/php/postgres (один compose-проект),
+# поэтому обращаются к ним по именам сервисов. Наружу публикуется только UI Prometheus,
+# и только на 127.0.0.1 — экспортеры опрашивает сам Prometheus изнутри сети.
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # Для дев-окружения хватит недели истории; размерный лимит — страховка,
+      # чтобы том не разросся на ноутбуке студента (что наступит раньше)
+      - --storage.tsdb.retention.time=7d
+      - --storage.tsdb.retention.size=1GB
+      # Разрешает POST /-/reload: правки prometheus.yml и правил применяются
+      # без рестарта контейнера (`make mon-reload`)
+      - --web.enable-lifecycle
+    volumes:
+      - ./docker/prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    healthcheck:
+      # /-/ready, а не /-/healthy: ready = TSDB загружена и Prometheus готов отвечать на запросы
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:9090/-/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  nginx-exporter:
+    # Свой тонкий образ поверх официального — только ради wget для healthcheck
+    build:
+      context: ./docker/nginx-exporter
+    command:
+      - --nginx.scrape-uri=http://nginx:8081/stub_status
+    depends_on:
+      nginx:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:9113/metrics"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+  php-fpm-exporter:
+    image: hipages/php-fpm_exporter:2.2.0
+    environment:
+      # Ходит в php-fpm напрямую по FastCGI (как nginx), за pm.status_path из www.conf
+      PHP_FPM_SCRAPE_URI: tcp://php:9000/status
+      # php-fpm иногда отдаёт несогласованные active/idle в момент скрейпа —
+      # экспортер пересчитывает их по списку процессов
+      PHP_FPM_FIX_PROCESS_COUNT: "true"
+    depends_on:
+      php:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:9253/metrics"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.20.1
+    command:
+      # Метрики по запросам из pg_stat_statements выключены по умолчанию. Включаем,
+      # но ограничиваем топом: каждый запрос — это отдельные серии в Prometheus
+      - --collector.stat_statements
+      - --collector.stat_statements.limit=50
+    environment:
+      # Отдельный пользователь с ролью pg_monitor, а не пользователь приложения
+      DATA_SOURCE_URI: postgres:5432/${POSTGRES_DB}?sslmode=disable
+      DATA_SOURCE_USER: ${POSTGRES_EXPORTER_USER:-postgres_exporter}
+      DATA_SOURCE_PASS: ${POSTGRES_EXPORTER_PASSWORD:-exporter_dev_password}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # Проверяем, что жив сам экспортер. Доступность БД — это pg_up в метриках:
+      # если бы healthcheck падал вместе с БД, restart экспортера ничего бы не дал
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:9187/"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+  # Метрики контейнеров (CPU/память/сеть каждого контейнера). Необязателен:
+  # включается через COMPOSE_PROFILES=cadvisor. На Linux работает полноценно;
+  # на Docker Desktop (macOS/Windows) Docker живёт в виртуалке, и cAdvisor видит
+  # её, а не хост — часть метрик и имён контейнеров может отсутствовать (см. README)
+  cadvisor:
+    image: ghcr.io/google/cadvisor:v0.60.6
+    profiles: ["cadvisor"]
+    # Нужен доступ к cgroups и /dev/kmsg хоста — без этого cAdvisor слеп
+    privileged: true
+    devices:
+      - /dev/kmsg
+    command:
+      # Только контейнеры Docker, без системных cgroup'ов хоста
+      - --docker_only=true
+      - --housekeeping_interval=15s
+      # Только то, что реально смотрим. По умолчанию cAdvisor отдаёт сотни серий
+      # на каждый контейнер (per-CPU, диски, TCP-состояния) — это лишняя кардинальность
+      - --enable_metrics=cpu,memory,network,oom_event
+    volumes:
+      - /:/rootfs:ro
+      # Именно сокет, а не весь /var/run: на Docker Desktop /var/run виртуалки не содержит
+      # docker.sock, а монтирование самого сокета Docker Desktop пробрасывает специально.
+      # Без сокета cAdvisor видит голые cgroup'ы, но не знает имён контейнеров
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Новые версии cAdvisor читают метаданные контейнеров Docker через containerd
+      - /run/containerd:/run/containerd:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    ports:
+      - "127.0.0.1:${CADVISOR_PORT:-8088}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:

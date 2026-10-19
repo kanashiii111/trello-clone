@@ -1,0 +1,49 @@
+# Prometheus сам ходит за метриками (pull-модель): раз в scrape_interval делает
+# HTTP GET /metrics на каждый target. Если target не ответил — метрика up{...} = 0,
+# и это уже сигнал сам по себе: «мы не знаем, что с сервисом» ≠ «с сервисом всё хорошо».
+global:
+  # 15 секунд — компромисс для дев-окружения: графики достаточно подробные,
+  # а данных за 7 дней немного. В проде часто ставят 30s–1m
+  scrape_interval: 15s
+  # Как часто вычислять правила алертов (появятся на этапе 5)
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Prometheus тоже сервис, и его тоже надо мониторить: сколько серий, сколько
+  # занимает TSDB, не падают ли скрейпы
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # nginx сам не умеет отдавать метрики в формате Prometheus — экспортер читает
+  # stub_status (внутренний :8081, см. docker/nginx/conf.d/status.conf) и переводит
+  - job_name: nginx
+    static_configs:
+      - targets: ["nginx-exporter:9113"]
+
+  # Пул php-fpm: занятые/свободные воркеры, очередь, упирание в max_children
+  - job_name: php-fpm
+    static_configs:
+      - targets: ["php-fpm-exporter:9253"]
+
+  # PostgreSQL: коннекты, транзакции, размер БД, pg_stat_statements.
+  # Важно: если упадёт сама БД, up{job="postgres"} останется 1 (экспортер-то жив),
+  # а pg_up станет 0 — алерт PostgresDown будет смотреть именно на pg_up
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+
+  # cAdvisor необязателен (compose profile «cadvisor»). Поэтому не static_configs,
+  # а DNS-обнаружение: если контейнер не запущен, имя не резолвится, target'ов
+  # просто нет — и не висит вечный «DOWN», который зря поднимал бы TargetDown.
+  # Цена — ошибка резолва в логах Prometheus раз в refresh_interval
+  - job_name: cadvisor
+    dns_sd_configs:
+      - names: ["cadvisor"]
+        type: A
+        port: 8080
+        refresh_interval: 30s
+    relabel_configs:
+      # Вместо IP контейнера (меняется при пересоздании) — стабильное имя
+      - target_label: instance
+        replacement: cadvisor
