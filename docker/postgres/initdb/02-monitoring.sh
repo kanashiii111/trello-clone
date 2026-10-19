@@ -21,6 +21,13 @@ psql -v ON_ERROR_STOP=1 \
     --dbname "$POSTGRES_DB" \
     -v exporter_user="$EXPORTER_USER" \
     -v exporter_password="$EXPORTER_PASSWORD" <<'EOSQL'
+-- pg_stat_statements запоминает и utility-команды вместе с текстом — включая
+-- ALTER ROLE ... PASSWORD 'секрет'. А postgres-exporter отдаёт текст запросов
+-- в Prometheus (pg_stat_statements_query_id{query=...}), то есть пароль уехал бы
+-- в метрики. Отключаем запись utility-команд только для этой сессии.
+-- Мораль для лекции: текст запросов в метриках/логах — потенциальная утечка
+SET pg_stat_statements.track_utility = off;
+
 -- CREATE ROLE не умеет IF NOT EXISTS — создаём роль, только если её ещё нет
 SELECT format('CREATE ROLE %I LOGIN', :'exporter_user')
 WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'exporter_user')

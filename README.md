@@ -78,6 +78,8 @@ make mon-up      # база + Prometheus и экспортеры
 make mon-down    # убрать мониторинг, приложение продолжит работать
 ```
 
+- Grafana — http://127.0.0.1:3000/ — сразу открывается дашборд «Обзор сервиса»
+  (анонимный просмотр). Для правки — вход `admin` / `admin` (из `.env`).
 - Prometheus — http://127.0.0.1:9090/ (Status → Targets: все должны быть `UP`).
 - Экспортеры наружу не публикуются: их опрашивает только Prometheus изнутри
   docker-сети. `stub_status` nginx живёт на внутреннем порту 8081, статус пула
@@ -87,6 +89,29 @@ make mon-down    # убрать мониторинг, приложение пр�
   `http://nginx/nginx-health`. Результат — метрика `probe_success`: попробуйте
   `docker compose stop postgres` и запрос `probe_success` в Prometheus —
   health.php уйдёт в 0 (503), а nginx-health останется 1.
+
+### Grafana
+
+Datasource и дашборды подключаются через provisioning (`docker/grafana/provisioning`)
+из JSON-файлов в `docker/grafana/dashboards` — после `make mon-up` ничего не
+нужно настраивать руками, а удаление тома `grafana-data` ничего не ломает.
+
+- **Сервис / Обзор сервиса** — доступность (black-box), RED по маршрутам
+  (rate, доля 5xx, p50/p95/p99), насыщение пула php-fpm, PostgreSQL
+  (соединения, TPS, топ медленных запросов из `pg_stat_statements`),
+  бизнес-метрика. У каждой панели в (i) — пояснение, что и зачем она показывает.
+- **Community / NGINX** — официальный дашборд nginx-prometheus-exporter.
+- **Community / PostgreSQL Database** — grafana.com/dashboards/9628, адаптирован:
+  убраны Kubernetes-переменные. Часть панелей bgwriter пуста на PostgreSQL 17+
+  (счётчики переехали в `pg_stat_checkpointer`) — это ожидаемо.
+
+Править дашборды в UI можно (под admin), но при рестарте Grafana они вернутся
+к версии из git. Чтобы сохранить — Share → Export → JSON и заменить файл.
+
+Попутная тема для лекции: postgres-exporter отдаёт текст запросов из
+`pg_stat_statements` меткой `query`. Всё, что попало в текст запроса
+(например, `ALTER ROLE ... PASSWORD '...'`), уедет в Prometheus — поэтому
+`02-monitoring.sh` отключает `track_utility` для своей сессии.
 
 ### Метрики приложения
 
@@ -164,6 +189,7 @@ docker/php/     — Dockerfile + php.ini + пул php-fpm (www.conf)
 docker/postgres/— Dockerfile + postgresql.conf + init-скрипты
 docker/prometheus/ — конфиг Prometheus
 docker/blackbox/ — модули black-box проб
+docker/grafana/ — provisioning datasource и дашборды (JSON)
 docker/nginx-exporter/ — тонкая обёртка над образом экспортера (wget для healthcheck)
 compose.yaml    — оркестрация; значения по умолчанию — в .env.example
 compose.monitoring.yaml — стек мониторинга, подключается через -f

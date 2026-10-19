@@ -43,6 +43,43 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  grafana:
+    image: grafana/grafana:13.2.4
+    environment:
+      # Админ — для правки дашбордов; логин/пароль из .env (dev-значения в .env.example)
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Анонимный просмотр: на паре дашборд открывается сразу, без формы входа.
+      # Только Viewer — смотреть можно, менять нельзя. Для прода так не делают
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      # Домашняя страница — основной дашборд, а не приветственный экран
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/service/service-overview.json
+      # Учебное окружение должно работать офлайн и не ходить в интернет само по себе
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+    volumes:
+      - ./docker/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./docker/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      # Здесь только состояние самой Grafana (сессии, настройки пользователей).
+      # Datasource и дашборды берутся из provisioning — том можно удалить без потерь
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
   nginx-exporter:
     # Свой тонкий образ поверх официального — только ради wget для healthcheck
     build:
@@ -86,6 +123,13 @@ services:
       # но ограничиваем топом: каждый запрос — это отдельные серии в Prometheus
       - --collector.stat_statements
       - --collector.stat_statements.limit=50
+      # Текст запроса меткой рядом с queryid — на дашборде видно «SELECT pg_sleep($1)»,
+      # а не безликое число. Рядов не прибавляет: у одного queryid один текст.
+      # Обрезаем, чтобы длинные запросы не раздували метки
+      - --collector.stat_statements.include_query
+      - --collector.stat_statements.query_length=80
+      # Запросы самого экспортера к pg_stat_* — шум, к приложению отношения не имеют
+      - --collector.stat_statements.exclude_users=${POSTGRES_EXPORTER_USER:-postgres_exporter}
     environment:
       # Отдельный пользователь с ролью pg_monitor, а не пользователь приложения
       DATA_SOURCE_URI: postgres:5432/${POSTGRES_DB}?sslmode=disable
@@ -161,3 +205,4 @@ services:
 
 volumes:
   prometheus-data:
+  grafana-data:

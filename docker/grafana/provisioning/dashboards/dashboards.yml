@@ -1,0 +1,28 @@
+# Дашборды — JSON-файлы в репозитории (docker/grafana/dashboards), по провайдеру
+# на папку: service/ — наш дашборд, community/ — стандартные с grafana.com и из
+# репозиториев экспортеров, адаптированные под это окружение.
+apiVersion: 1
+
+providers:
+  - name: service
+    folder: Сервис
+    type: file
+    # Правки в UI разрешены, чтобы на лекции можно было покрутить запросы,
+    # но при рестарте Grafana дашборд вернётся к версии из git. Чтобы сохранить
+    # изменения — Export → JSON и положить файл в репозиторий
+    allowUiUpdates: true
+    # Удалили файл — дашборд исчезнет и из Grafana
+    disableDeletion: false
+    # Grafana перечитывает файлы на лету: правка JSON видна без рестарта
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards/service
+
+  - name: community
+    folder: Community
+    type: file
+    allowUiUpdates: true
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards/community

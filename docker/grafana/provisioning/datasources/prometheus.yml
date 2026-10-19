@@ -1,0 +1,21 @@
+# Provisioning: Grafana читает этот файл при старте и сама создаёт datasource.
+# Никаких ручных кликов «Add data source» после `make mon-up` — конфигурация
+# лежит в git, одинакова у всех студентов и переживает удаление тома grafana-data.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    # Фиксированный uid — на него ссылаются дашборды в docker/grafana/dashboards.
+    # Без него Grafana сгенерирует случайный, и JSON дашбордов придётся править руками
+    uid: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    # Запрещаем править datasource в UI: всё равно перезапишется при следующем старте,
+    # а правки «мышкой» потеряются и запутают
+    editable: false
+    jsonData:
+      # Совпадает с scrape_interval в prometheus.yml: от него Grafana считает
+      # $__rate_interval — минимальное окно rate(), в которое гарантированно попадут 2+ точки
+      timeInterval: 15s
