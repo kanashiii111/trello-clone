@@ -4,7 +4,9 @@
     "type": "project",
     "require": {
         "php": ">=8.5",
-        "ext-pdo_pgsql": "*"
+        "ext-pdo_pgsql": "*",
+        "ext-apcu": "*",
+        "promphp/prometheus_client_php": "^2.15"
     },
     "autoload": {
         "psr-4": {

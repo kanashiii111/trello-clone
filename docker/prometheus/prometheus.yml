@@ -33,6 +33,13 @@ scrape_configs:
     static_configs:
       - targets: ["postgres-exporter:9187"]
 
+  # Метрики самого приложения (white-box): RED по маршрутам и бизнес-метрика.
+  # Ходим через внутренний server nginx :8081 — снаружи /metrics.php закрыт
+  - job_name: app
+    metrics_path: /metrics.php
+    static_configs:
+      - targets: ["nginx:8081"]
+
   # Сам blackbox-exporter — чтобы заметить, если сломались не пробы, а он сам
   - job_name: blackbox-exporter
     static_configs:

@@ -5,6 +5,7 @@ declare(strict_types=1);
 require __DIR__ . '/../vendor/autoload.php';
 
 use App\Database;
+use App\Metrics;
 
 // Обработка формы добавления записи. Редиректим после POST (Post/Redirect/Get),
 // чтобы повторная отправка формы не происходила при обновлении страницы
@@ -13,6 +14,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['note'])) {
         $pdo = Database::connect();
         $stmt = $pdo->prepare('INSERT INTO demo (note) VALUES (:note)');
         $stmt->execute(['note' => (string) $_POST['note']]);
+        // Считаем только успешно сохранённые записи — после execute(), а не до
+        Metrics::noteCreated();
     } catch (\Throwable $e) {
         // Ошибка подключения/записи — статус БД и так будет виден на странице ниже
     }

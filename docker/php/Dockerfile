@@ -21,6 +21,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && docker-php-ext-install -j"$(nproc)" zip \
     && rm -rf /var/lib/apt/lists/*
 
+# APCu — общая память, которую видят все воркеры php-fpm. Нужна для метрик приложения:
+# PHP устроен как shared-nothing — каждый запрос начинается с чистого листа, а воркеры
+# пула — отдельные процессы. Счётчик в обычной переменной умрёт в конце запроса,
+# а Prometheus, придя за /metrics.php, попадёт в случайный воркер. Значит, счётчики
+# надо копить вне процесса: APCu (память мастер-процесса fpm) — самый простой вариант
+# для одного контейнера; при нескольких репликах php берут Redis.
+# Версию фиксируем, чтобы сборка была воспроизводимой. Компилятор и phpize уже есть
+# в Debian-варианте официального образа (PHPIZE_DEPS)
+RUN pecl install apcu-5.1.28 \
+    && docker-php-ext-enable apcu \
+    && rm -rf /tmp/pear
+
 # Composer берём готовым бинарником из официального образа —
 # без curl | sh и без лишнего слоя с исходниками composer
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer

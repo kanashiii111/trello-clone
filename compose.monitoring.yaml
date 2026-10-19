@@ -8,6 +8,15 @@
 # и только на 127.0.0.1 — экспортеры опрашивает сам Prometheus изнутри сети.
 
 services:
+  # Дополняем базовый сервис php (compose сливает описания одноимённых сервисов):
+  # включаем метрики приложения только вместе с мониторингом. Списки volumes
+  # при слиянии складываются, environment — объединяется по ключам
+  php:
+    environment:
+      APP_METRICS_ENABLED: "1"
+    volumes:
+      - ./docker/php/monitoring.ini:/usr/local/etc/php/conf.d/zz-monitoring.ini:ro
+
   prometheus:
     image: prom/prometheus:v3.15.0
     command:

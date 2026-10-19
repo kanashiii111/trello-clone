@@ -35,6 +35,9 @@ make init && make up && make composer
   `postgresql.conf`) — тоже volume, но применяются не мгновенно: нужен
   `docker compose restart <сервис>`, потому что nginx/php-fpm/postgres
   читают их только при старте.
+- **После обновления репозитория** (например, переключения на тег
+  `monitoring-step-3`, где в образ php добавлен APCu) — тоже `make build`,
+  `make up`, `make composer`.
 - **Правки в `Dockerfile` или `app/composer.json`** (новое системное
   расширение PHP, системный пакет, PHP-зависимость) — нужен `make build`,
   затем `make up` (и `make composer`, если менялся `composer.json`).
@@ -84,6 +87,33 @@ make mon-down    # убрать мониторинг, приложение пр�
   `http://nginx/nginx-health`. Результат — метрика `probe_success`: попробуйте
   `docker compose stop postgres` и запрос `probe_success` в Prometheus —
   health.php уйдёт в 0 (503), а nginx-health останется 1.
+
+### Метрики приложения
+
+Под мониторингом php получает `APP_METRICS_ENABLED=1` и `auto_prepend_file`
+(`docker/php/monitoring.ini`): файл `app/instrumentation/prepend.php`
+выполняется перед каждым скриптом и в конце запроса пишет в APCu
+`http_requests_total{method,route,status}` и гистограмму
+`http_request_duration_seconds{method,route}`. Бизнес-метрика
+`app_notes_created_total` считается в `index.php`. Без мониторинга всё это
+выключено, `App\Metrics` превращается в no-op.
+
+- Метрики отдаёт `/metrics.php`, но только через внутренний порт nginx 8081
+  (Prometheus, job `app`). Снаружи http://127.0.0.1:8080/metrics.php — 404.
+  Посмотреть руками:
+  `docker compose exec nginx curl -s http://localhost:8081/metrics.php`.
+- `route` — путь PHP-скрипта, а не URL: метки с неограниченным числом значений
+  (query string, id) взрывают кардинальность Prometheus.
+- Счётчики живут в памяти APCu и обнуляются при рестарте php — это нормально,
+  `rate()`/`increase()` в Prometheus корректно обрабатывают сброс счётчика.
+
+Демо-эндпоинты для экспериментов (работают и без мониторинга):
+
+| URL | Что делает |
+|---|---|
+| `/demo/slow.php?seconds=2` | `pg_sleep` в PostgreSQL (максимум 10 с) — видно в latency, slow-log и `pg_stat_statements` |
+| `/demo/error.php?rate=0.3` | отдаёт 500 с заданной вероятностью (по умолчанию всегда) |
+| `/demo/cpu.php?ms=300` | жжёт CPU воркера php-fpm (максимум 2000 мс) |
 
 ### cAdvisor (необязательно)
 
