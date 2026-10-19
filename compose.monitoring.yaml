@@ -95,6 +95,22 @@ services:
       start_period: 5s
     restart: unless-stopped
 
+  # Black-box пробы: HTTP-запросы к приложению «как от пользователя»
+  # (модули — в docker/blackbox/blackbox.yml, адреса — в prometheus.yml)
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.29.0
+    command:
+      - --config.file=/etc/blackbox_exporter/blackbox.yml
+    volumes:
+      - ./docker/blackbox:/etc/blackbox_exporter:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:9115/-/healthy"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
   # Метрики контейнеров (CPU/память/сеть каждого контейнера). Необязателен:
   # включается через COMPOSE_PROFILES=cadvisor. На Linux работает полноценно;
   # на Docker Desktop (macOS/Windows) Docker живёт в виртуалке, и cAdvisor видит

@@ -79,6 +79,11 @@ make mon-down    # убрать мониторинг, приложение пр�
 - Экспортеры наружу не публикуются: их опрашивает только Prometheus изнутри
   docker-сети. `stub_status` nginx живёт на внутреннем порту 8081, статус пула
   php-fpm (`/status`) читается напрямую по FastCGI.
+- Black-box пробы (blackbox-exporter) раз в 15 секунд запрашивают
+  `http://nginx/health.php` (ждём 200 и `"status":"ok"` в теле) и
+  `http://nginx/nginx-health`. Результат — метрика `probe_success`: попробуйте
+  `docker compose stop postgres` и запрос `probe_success` в Prometheus —
+  health.php уйдёт в 0 (503), а nginx-health останется 1.
 
 ### cAdvisor (необязательно)
 
@@ -128,6 +133,7 @@ docker/nginx/   — Dockerfile + конфиг nginx
 docker/php/     — Dockerfile + php.ini + пул php-fpm (www.conf)
 docker/postgres/— Dockerfile + postgresql.conf + init-скрипты
 docker/prometheus/ — конфиг Prometheus
+docker/blackbox/ — модули black-box проб
 docker/nginx-exporter/ — тонкая обёртка над образом экспортера (wget для healthcheck)
 compose.yaml    — оркестрация; значения по умолчанию — в .env.example
 compose.monitoring.yaml — стек мониторинга, подключается через -f

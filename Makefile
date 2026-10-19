@@ -35,7 +35,7 @@ help:
 	@echo "make mon-up    — поднять базу + мониторинг (cAdvisor: COMPOSE_PROFILES=cadvisor make mon-up)"
 	@echo "make mon-down  — остановить мониторинг, база продолжит работать"
 	@echo "make mon-ps    — статус контейнеров вместе с мониторингом"
-	@echo "make mon-check — проверить конфиг Prometheus (promtool)"
+	@echo "make mon-check — проверить конфиги Prometheus (promtool) и blackbox"
 	@echo "make mon-reload — перечитать конфиг Prometheus без рестарта"
 	@echo "make pg-monitoring — применить настройки мониторинга к уже существующей БД"
 
@@ -99,6 +99,7 @@ mon-ps:
 # проверяется ровно тот конфиг, который будет загружен
 mon-check:
 	$(COMPOSE_MON) run --rm --no-deps --entrypoint promtool prometheus check config /etc/prometheus/prometheus.yml
+	$(COMPOSE_MON) run --rm --no-deps blackbox-exporter --config.file=/etc/blackbox_exporter/blackbox.yml --config.check
 
 mon-reload:
 	curl -fsS -X POST http://127.0.0.1:$(or $(PROMETHEUS_PORT),9090)/-/reload && echo "Prometheus: конфиг перечитан"

@@ -33,6 +33,42 @@ scrape_configs:
     static_configs:
       - targets: ["postgres-exporter:9187"]
 
+  # Сам blackbox-exporter — чтобы заметить, если сломались не пробы, а он сам
+  - job_name: blackbox-exporter
+    static_configs:
+      - targets: ["blackbox-exporter:9115"]
+
+  # Black-box пробы. Prometheus ходит не на nginx, а на blackbox-exporter:
+  # GET /probe?module=...&target=<url>, и тот уже делает реальный запрос.
+  # relabel_configs ниже — стандартный приём для этого: адрес из targets
+  # превращается в параметр target, в метку instance (чтобы на графиках был URL,
+  # а не адрес экспортера), а сам скрейп уходит на blackbox-exporter.
+  # Результат — метрика probe_success (1/0) плюс время, код ответа и т.п.
+  # Ходим на http://nginx/ изнутри docker-сети — тот же путь, что у запроса
+  # пользователя, кроме проброса порта на хост
+  - job_name: blackbox-health
+    metrics_path: /probe
+    params:
+      module: [http_health]
+    static_configs:
+      - targets: ["http://nginx/health.php"]
+    relabel_configs: &blackbox_relabel
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  - job_name: blackbox-nginx
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets: ["http://nginx/nginx-health"]
+    # YAML-якорь: те же правила, что выше, без копипасты
+    relabel_configs: *blackbox_relabel
+
   # cAdvisor необязателен (compose profile «cadvisor»). Поэтому не static_configs,
   # а DNS-обнаружение: если контейнер не запущен, имя не резолвится, target'ов
   # просто нет — и не висит вечный «DOWN», который зря поднимал бы TargetDown.
