@@ -247,13 +247,108 @@
       ]
     },
     {
+      "type": "table",
+      "id": 21,
+      "title": "Активные алерты",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Алерты в состоянии firing (метрика ALERTS, которую Prometheus пишет сам). pending — условие уже выполняется, но for ещё не истёк — здесь не показываем. Письма о них — в Mailpit (http://127.0.0.1:8025).",
+      "gridPos": {
+        "x": 0,
+        "y": 7,
+        "w": 24,
+        "h": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "ALERTS{alertstate=\"firing\"}",
+          "format": "table",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true,
+              "__name__": true,
+              "alertstate": true
+            },
+            "indexByName": {
+              "severity": 0,
+              "alertname": 1,
+              "job": 2,
+              "instance": 3
+            },
+            "renameByName": {}
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          },
+          "noValue": "Нет активных алертов"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "severity"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "critical": {
+                        "color": "red",
+                        "index": 0
+                      },
+                      "warning": {
+                        "color": "orange",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
       "type": "row",
       "id": 5,
       "title": "RED: запросы приложения (white-box, метрики из PHP)",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 7,
+        "y": 13,
         "w": 24,
         "h": 1
       },
@@ -270,7 +365,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 8,
+        "y": 14,
         "w": 12,
         "h": 8
       },
@@ -331,7 +426,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 8,
+        "y": 14,
         "w": 12,
         "h": 8
       },
@@ -420,7 +515,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 16,
+        "y": 22,
         "w": 12,
         "h": 8
       },
@@ -519,7 +614,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 16,
+        "y": 22,
         "w": 12,
         "h": 8
       },
@@ -580,7 +675,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 24,
+        "y": 30,
         "w": 24,
         "h": 7
       },
@@ -637,7 +732,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 31,
+        "y": 37,
         "w": 24,
         "h": 1
       },
@@ -654,7 +749,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 32,
+        "y": 38,
         "w": 12,
         "h": 8
       },
@@ -753,7 +848,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 32,
+        "y": 38,
         "w": 12,
         "h": 8
       },
@@ -821,7 +916,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 40,
+        "y": 46,
         "w": 24,
         "h": 1
       },
@@ -838,7 +933,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 41,
+        "y": 47,
         "w": 8,
         "h": 8
       },
@@ -899,7 +994,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 41,
+        "y": 47,
         "w": 8,
         "h": 8
       },
@@ -971,7 +1066,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 41,
+        "y": 47,
         "w": 8,
         "h": 8
       },
@@ -1028,7 +1123,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 49,
+        "y": 55,
         "w": 24,
         "h": 1
       },
@@ -1045,7 +1140,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 50,
+        "y": 56,
         "w": 6,
         "h": 7
       },
@@ -1108,7 +1203,7 @@
       },
       "gridPos": {
         "x": 6,
-        "y": 50,
+        "y": 56,
         "w": 18,
         "h": 7
       },

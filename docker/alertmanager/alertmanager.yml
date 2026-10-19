@@ -1,0 +1,60 @@
+# Alertmanager получает от Prometheus сработавшие алерты и решает, что с ними
+# делать: сгруппировать, кому отправить, когда напомнить, что подавить.
+# Prometheus отвечает за «что сломалось», Alertmanager — за «кому и как сказать».
+#
+# Почта уходит в Mailpit — локальный SMTP-сервер с веб-интерфейсом
+# (http://127.0.0.1:8025). Работает офлайн и никому ничего реально не шлёт.
+
+global:
+  smtp_smarthost: mailpit:1025
+  smtp_from: alertmanager@devops-course.local
+  # Mailpit в dev-режиме принимает почту без TLS и авторизации
+  smtp_require_tls: false
+
+route:
+  receiver: team
+  # Алерты с одинаковым alertname приходят одним письмом: упали три target'а —
+  # одно письмо TargetDown со списком, а не три. Группировка — главное средство
+  # против «алертного шторма»
+  group_by: [alertname]
+  # Сколько ждать перед первым письмом новой группы: вдруг за ней следом
+  # придут ещё алерты той же группы — отправим одним письмом
+  group_wait: 15s
+  # Как часто сообщать об изменениях в уже отправленной группе (новый алерт
+  # добавился или какой-то разрешился)
+  group_interval: 1m
+  # Напоминание, если алерт всё ещё горит. Для дев-стенда — час; в проде
+  # обычно 4–12 часов: слишком частые повторы приучают игнорировать письма
+  repeat_interval: 1h
+
+  # Маршрутизация по severity: критичное — дежурному, остальное — в общий ящик
+  # команды. Порядок важен: срабатывает первый подходящий маршрут
+  routes:
+    - matchers:
+        - severity = critical
+      receiver: oncall
+
+receivers:
+  - name: oncall
+    email_configs:
+      - to: oncall@devops-course.local
+        # Письмо и при срабатывании, и при восстановлении (RESOLVED) —
+        # иначе непонятно, можно ли уже перестать чинить
+        send_resolved: true
+
+  - name: team
+    email_configs:
+      - to: team@devops-course.local
+        send_resolved: true
+
+# Подавление: если горит причина, не шлём письма о её симптомах.
+# Без PostgreSQL health.php отдаёт 503 — HealthCheckFailing сработал бы тоже,
+# но дежурному нужно одно письмо о причине (PostgresDown), а не два.
+# equal пустой: у алертов разные метки instance, а БД у нас одна на весь стенд.
+# В системе с несколькими БД тут перечисляют метки, по которым связаны
+# причина и симптом (например, cluster), иначе одна упавшая БД заглушит всё
+inhibit_rules:
+  - source_matchers:
+      - alertname = PostgresDown
+    target_matchers:
+      - alertname = HealthCheckFailing

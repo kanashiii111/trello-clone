@@ -35,8 +35,8 @@ help:
 	@echo "make mon-up    — поднять базу + мониторинг (cAdvisor: COMPOSE_PROFILES=cadvisor make mon-up)"
 	@echo "make mon-down  — остановить мониторинг, база продолжит работать"
 	@echo "make mon-ps    — статус контейнеров вместе с мониторингом"
-	@echo "make mon-check — проверить конфиги Prometheus (promtool) и blackbox"
-	@echo "make mon-reload — перечитать конфиг Prometheus без рестарта"
+	@echo "make mon-check — проверить конфиги Prometheus и правила (promtool), blackbox, Alertmanager (amtool)"
+	@echo "make mon-reload — перечитать конфиги Prometheus и Alertmanager без рестарта"
 	@echo "make pg-monitoring — применить настройки мониторинга к уже существующей БД"
 
 # Создаёт .env из примера и подставляет реальные UID/GID текущего пользователя,
@@ -102,10 +102,13 @@ mon-ps:
 # проверяется ровно тот конфиг, который будет загружен
 mon-check:
 	$(COMPOSE_MON) run --rm --no-deps --entrypoint promtool prometheus check config /etc/prometheus/prometheus.yml
+	$(COMPOSE_MON) run --rm --no-deps --entrypoint promtool prometheus check rules /etc/prometheus/rules/alerts.yml
 	$(COMPOSE_MON) run --rm --no-deps blackbox-exporter --config.file=/etc/blackbox_exporter/blackbox.yml --config.check
+	$(COMPOSE_MON) run --rm --no-deps --entrypoint amtool alertmanager check-config /etc/alertmanager/alertmanager.yml
 
 mon-reload:
-	curl -fsS -X POST http://127.0.0.1:$(or $(PROMETHEUS_PORT),9090)/-/reload && echo "Prometheus: конфиг перечитан"
+	curl -fsS -X POST http://127.0.0.1:$(or $(PROMETHEUS_PORT),9090)/-/reload && echo "Prometheus: конфиг и правила перечитаны"
+	curl -fsS -X POST http://127.0.0.1:$(or $(ALERTMANAGER_PORT),9093)/-/reload && echo "Alertmanager: конфиг перечитан"
 
 # initdb-скрипты выполняются только на пустом томе pgdata. Чтобы не делать `make clean`
 # (и не терять данные), применяем мониторинговую часть вручную:

@@ -29,6 +29,9 @@ services:
       # Разрешает POST /-/reload: правки prometheus.yml и правил применяются
       # без рестарта контейнера (`make mon-reload`)
       - --web.enable-lifecycle
+      # Адрес, по которому Prometheus доступен человеку: из него строятся ссылки
+      # «Source» в письмах алертов. Без него в письме был бы внутренний адрес контейнера
+      - --web.external-url=http://127.0.0.1:${PROMETHEUS_PORT:-9090}
     volumes:
       - ./docker/prometheus:/etc/prometheus:ro
       - prometheus-data:/prometheus
@@ -41,6 +44,51 @@ services:
       timeout: 3s
       retries: 3
       start_period: 10s
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.34.1
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      # Здесь хранятся silences (временные «заглушки» алертов) и состояние
+      # уведомлений — чтобы рестарт Alertmanager не слал все письма заново
+      - --storage.path=/alertmanager
+      # Для ссылок в письмах и UI — см. то же у Prometheus
+      - --web.external-url=http://127.0.0.1:${ALERTMANAGER_PORT:-9093}
+    volumes:
+      - ./docker/alertmanager:/etc/alertmanager:ro
+      - alertmanager-data:/alertmanager
+    ports:
+      - "127.0.0.1:${ALERTMANAGER_PORT:-9093}:9093"
+    depends_on:
+      mailpit:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:9093/-/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+  # Локальный «почтовый сервер» для алертов: SMTP на :1025 внутри docker-сети,
+  # веб-интерфейс и API на :8025. Письма хранятся в памяти и пропадают при рестарте
+  mailpit:
+    image: axllent/mailpit:v1.31.6
+    environment:
+      # Не ограничиваем отправителей: в docker-сети пишет только Alertmanager
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+      # Старые письма удаляются автоматически — не копим бесконечно
+      MP_MAX_MESSAGES: "500"
+    ports:
+      - "127.0.0.1:${MAILPIT_PORT:-8025}:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
     restart: unless-stopped
 
   grafana:
@@ -206,3 +254,4 @@ services:
 volumes:
   prometheus-data:
   grafana-data:
+  alertmanager-data:

@@ -5,8 +5,20 @@ global:
   # 15 секунд — компромисс для дев-окружения: графики достаточно подробные,
   # а данных за 7 дней немного. В проде часто ставят 30s–1m
   scrape_interval: 15s
-  # Как часто вычислять правила алертов (появятся на этапе 5)
+  # Как часто вычислять правила алертов
   evaluation_interval: 15s
+
+# Правила алертов — отдельными файлами: их проверяет `promtool check rules`
+# (`make mon-check`) и удобно смотреть в ревью отдельно от scrape-конфигов
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+# Prometheus только вычисляет алерты; группировка, повторы, подавление
+# и доставка — работа Alertmanager
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
 
 scrape_configs:
   # Prometheus тоже сервис, и его тоже надо мониторить: сколько серий, сколько
@@ -39,6 +51,12 @@ scrape_configs:
     metrics_path: /metrics.php
     static_configs:
       - targets: ["nginx:8081"]
+
+  # Alertmanager тоже надо мониторить: если он упал, алерты вычисляются,
+  # но не доходят до людей — самая тихая и опасная поломка
+  - job_name: alertmanager
+    static_configs:
+      - targets: ["alertmanager:9093"]
 
   # Сам blackbox-exporter — чтобы заметить, если сломались не пробы, а он сам
   - job_name: blackbox-exporter

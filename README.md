@@ -81,6 +81,8 @@ make mon-down    # убрать мониторинг, приложение пр�
 - Grafana — http://127.0.0.1:3000/ — сразу открывается дашборд «Обзор сервиса»
   (анонимный просмотр). Для правки — вход `admin` / `admin` (из `.env`).
 - Prometheus — http://127.0.0.1:9090/ (Status → Targets: все должны быть `UP`).
+- Alertmanager — http://127.0.0.1:9093/, письма алертов — в Mailpit
+  http://127.0.0.1:8025/ (локальный SMTP, наружу ничего не уходит).
 - Экспортеры наружу не публикуются: их опрашивает только Prometheus изнутри
   docker-сети. `stub_status` nginx живёт на внутреннем порту 8081, статус пула
   php-fpm (`/status`) читается напрямую по FastCGI.
@@ -140,6 +142,37 @@ Datasource и дашборды подключаются через provisioning 
 | `/demo/error.php?rate=0.3` | отдаёт 500 с заданной вероятностью (по умолчанию всегда) |
 | `/demo/cpu.php?ms=300` | жжёт CPU воркера php-fpm (максимум 2000 мс) |
 
+### Алерты
+
+Правила — `docker/prometheus/rules/alerts.yml` (проверяются `make mon-check`
+через `promtool`), маршрутизация и подавление — `docker/alertmanager/alertmanager.yml`
+(проверяется `amtool`). После правки любого из них — `make mon-reload`.
+
+| Алерт | Условие | for | Severity → кому |
+|---|---|---|---|
+| TargetDown | `up == 0` | 1m | warning → team@ |
+| HealthCheckFailing | `probe_success == 0` | 1m | critical → oncall@ |
+| HighErrorRate | доля 5xx > 5% при трафике > 0.2 RPS | 2m | critical → oncall@ |
+| HighLatencyP95 | p95 по route > 1 с | 3m | warning → team@ |
+| PhpFpmPoolSaturated | очередь php-fpm > 0 или упирание в max_children | 2m | warning → team@ |
+| PostgresDown | `pg_up == 0` | 30s | critical → oncall@ |
+| PostgresTooManyConnections | занято > 80% max_connections | 2m | warning → team@ |
+
+- У каждого алерта есть runbook — `docs/runbooks/<AlertName>.md`, ссылка
+  приходит в письме.
+- Алерты с одним `alertname` группируются в одно письмо; повтор, если алерт
+  всё ещё горит, — раз в час; при восстановлении приходит письмо `[RESOLVED]`.
+- `PostgresDown` подавляет `HealthCheckFailing` (inhibit_rules): когда лежит БД,
+  придёт одно письмо о причине, а не два. В Alertmanager подавленный алерт
+  виден с состоянием `suppressed`.
+- Путь алерта: Prometheus → Alerts (inactive → pending → firing) →
+  Alertmanager → письмо в Mailpit. Активные алерты есть и на дашборде
+  «Обзор сервиса».
+
+Быстро проверить цепочку: `docker compose stop postgres` — через ~1 минуту
+в Mailpit придёт `[FIRING:1] PostgresDown`; `docker compose start postgres` —
+через 1–2 минуты `[RESOLVED] PostgresDown`.
+
 ### cAdvisor (необязательно)
 
 Метрики CPU/памяти/сети по каждому контейнеру. Включается профилем:
@@ -190,6 +223,9 @@ docker/postgres/— Dockerfile + postgresql.conf + init-скрипты
 docker/prometheus/ — конфиг Prometheus
 docker/blackbox/ — модули black-box проб
 docker/grafana/ — provisioning datasource и дашборды (JSON)
+docker/prometheus/rules/ — правила алертов
+docker/alertmanager/ — маршрутизация и подавление алертов
+docs/runbooks/  — что делать по каждому алерту
 docker/nginx-exporter/ — тонкая обёртка над образом экспортера (wget для healthcheck)
 compose.yaml    — оркестрация; значения по умолчанию — в .env.example
 compose.monitoring.yaml — стек мониторинга, подключается через -f

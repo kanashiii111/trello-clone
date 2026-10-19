@@ -1,0 +1,140 @@
+# Правила алертов. Prometheus вычисляет их каждые evaluation_interval (15 с)
+# и отправляет сработавшие в Alertmanager, а тот уже решает, кому и как сообщить.
+#
+# Как читать правило:
+#   expr   — PromQL-условие; алерт «горит», пока запрос возвращает хоть один ряд.
+#            Каждый ряд результата — отдельный алерт со своими метками.
+#   for    — сколько условие должно держаться непрерывно, прежде чем алерт станет
+#            firing (до этого он pending). Защита от «дребезга»: короткий всплеск
+#            не должен будить дежурного. Чем дороже ложная тревога — тем длиннее for.
+#            Ловушка: rate(...[окно]) «растягивает» всплеск на всё окно. Если окно
+#            не короче for, даже 10-секундный всплеск продержит условие дольше for —
+#            и алерт сработает. Поэтому ниже окно всегда меньше for: условие
+#            держится примерно «длительность проблемы + окно», и сработает алерт,
+#            только если сама проблема длилась дольше, чем for − окно.
+#   labels — severity задаёт маршрут в Alertmanager (critical/warning).
+#   annotations — текст для человека; {{ $value }} и {{ $labels.x }} подставляются
+#            в момент срабатывания. runbook_url — «что делать», чтобы дежурный
+#            не начинал с нуля в три часа ночи.
+#
+# Значения for и порогов подобраны под дев-стенд и демо на лекции (минуты, а не
+# десятки минут) — в проде их подбирают по истории и SLO.
+#
+# runbook_url ведёт в docs/runbooks/ на GitHub (ветка main). В форке поменяйте
+# адрес репозитория; файлы лежат и локально — docs/runbooks/<AlertName>.md
+
+groups:
+  - name: availability
+    rules:
+      # Самый базовый алерт: Prometheus не смог забрать метрики. Это не значит,
+      # что сервис упал, но значит, что мы его не видим — а значит, и остальные
+      # алерты по этому target'у молчат. «Нет данных» ≠ «всё хорошо»
+      - alert: TargetDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Target {{ $labels.job }} ({{ $labels.instance }}) недоступен"
+          description: "Prometheus не может опросить {{ $labels.instance }} (job={{ $labels.job }}) дольше минуты. Метрики этого компонента не обновляются, алерты по нему не сработают."
+          runbook_url: "https://github.com/romicharroyo/local_zoo_for_vyatgu/blob/main/docs/runbooks/TargetDown.md"
+
+      # Black-box: сервис не работает так, как его видит пользователь.
+      # Это главный алерт «на симптом» — он срабатывает, какой бы ни была причина
+      - alert: HealthCheckFailing
+        expr: probe_success == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Проба {{ $labels.instance }} не проходит"
+          description: "blackbox-exporter дольше минуты получает неуспешный ответ от {{ $labels.instance }} (модуль job={{ $labels.job }}). Пользователи, скорее всего, видят ошибку."
+          runbook_url: "https://github.com/romicharroyo/local_zoo_for_vyatgu/blob/main/docs/runbooks/HealthCheckFailing.md"
+
+  - name: application
+    rules:
+      # Доля 5xx, а не количество: 10 ошибок в минуту при 20 запросах и при
+      # 20 000 — это разные ситуации. Второе условие (and ...) — минимальный трафик:
+      # иначе ночью одна ошибка из двух запросов дала бы «50% ошибок» и ложную тревогу.
+      # Фоновые пробы blackbox дают ~0.07 RPS, поэтому порог 0.2 RPS их отсекает.
+      # Окно 1m при for: 2m — всплеск ошибок короче минуты алерт не поднимет
+      - alert: HighErrorRate
+        expr: |
+          (
+            sum(rate(http_requests_total{status=~"5.."}[1m]))
+            /
+            sum(rate(http_requests_total[1m]))
+          ) > 0.05
+          and
+          sum(rate(http_requests_total[1m])) > 0.2
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Доля ошибок 5xx — {{ $value | humanizePercentage }}"
+          description: "Больше 5% запросов к приложению завершаются ошибкой 5xx уже 2 минуты (сейчас {{ $value | humanizePercentage }}). Разбивку по route смотрите на дашборде «Обзор сервиса»."
+          runbook_url: "https://github.com/romicharroyo/local_zoo_for_vyatgu/blob/main/docs/runbooks/HighErrorRate.md"
+
+      # p95 по route: общий перцентиль размывается быстрыми health-check'ами,
+      # а в разрезе route сразу видно, какой эндпоинт тормозит.
+      # Окно 2m — перцентилю нужно достаточно наблюдений, иначе он скачет;
+      # for: 3m — длиннее окна (см. ловушку в шапке файла)
+      - alert: HighLatencyP95
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le, route) (rate(http_request_duration_seconds_bucket[2m]))
+          ) > 1
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 latency {{ $labels.route }} — {{ $value | humanizeDuration }}"
+          description: "95-й перцентиль времени ответа {{ $labels.route }} выше 1 секунды уже 3 минуты (сейчас {{ $value | humanizeDuration }}). Время ожидания в очереди php-fpm сюда не входит — реальная задержка для пользователя может быть больше."
+          runbook_url: "https://github.com/romicharroyo/local_zoo_for_vyatgu/blob/main/docs/runbooks/HighLatencyP95.md"
+
+      # Насыщение (saturation) — опережающий сигнал: пул уже на пределе,
+      # ещё чуть-чуть нагрузки — и вырастут latency и ошибки. Значение
+      # pm.max_children экспортер не отдаёт, поэтому смотрим на последствия:
+      # запросы в очереди или факт упирания в лимит (окно 1m < for: 2m)
+      - alert: PhpFpmPoolSaturated
+        expr: |
+          phpfpm_listen_queue > 0
+          or
+          increase(phpfpm_max_children_reached[1m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Пул php-fpm {{ $labels.pool }} исчерпан"
+          description: "Все воркеры php-fpm (pm.max_children) заняты, запросы ждут в очереди. Значение: {{ $value }}."
+          runbook_url: "https://github.com/romicharroyo/local_zoo_for_vyatgu/blob/main/docs/runbooks/PhpFpmPoolSaturated.md"
+
+  - name: postgres
+    rules:
+      # pg_up, а не up: если упадёт БД, экспортер останется жив (up == 1),
+      # а вот pg_up станет 0. for короткий — без БД приложение не работает вовсе
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL недоступен"
+          description: "postgres-exporter ({{ $labels.instance }}) не может подключиться к PostgreSQL дольше 30 секунд."
+          runbook_url: "https://github.com/romicharroyo/local_zoo_for_vyatgu/blob/main/docs/runbooks/PostgresDown.md"
+
+      # Порог 80%, а не 100%: алерт должен прийти, пока ещё есть время
+      # разобраться, а не когда приложение уже получает «too many clients»
+      - alert: PostgresTooManyConnections
+        expr: |
+          sum by (instance) (pg_stat_activity_count)
+          /
+          max by (instance) (pg_settings_max_connections)
+          > 0.8
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PostgreSQL: занято {{ $value | humanizePercentage }} соединений"
+          description: "Использовано больше 80% max_connections уже 2 минуты (сейчас {{ $value | humanizePercentage }}). Новые подключения скоро начнут отклоняться."
+          runbook_url: "https://github.com/romicharroyo/local_zoo_for_vyatgu/blob/main/docs/runbooks/PostgresTooManyConnections.md"
