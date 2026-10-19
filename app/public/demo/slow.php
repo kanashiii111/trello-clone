@@ -17,6 +17,7 @@ declare(strict_types=1);
 require __DIR__ . '/../../vendor/autoload.php';
 
 use App\Database;
+use App\Log;
 
 // Верхний лимит обязателен: иначе ?seconds=100000 — это готовый способ занять
 // все воркеры и соединения одним curl'ом. Даже в учебном коде
@@ -31,9 +32,12 @@ try {
     $stmt = Database::connect()->prepare('SELECT pg_sleep(:seconds)');
     $stmt->execute(['seconds' => $seconds]);
 } catch (\Throwable $e) {
+    Log::error('slow query failed', ['error' => $e->getMessage()]);
     http_response_code(503);
     echo json_encode(['status' => 'fail', 'error' => 'database unavailable'], JSON_UNESCAPED_UNICODE);
     exit;
 }
+
+Log::info('slow query finished', ['seconds' => $seconds]);
 
 echo json_encode(['status' => 'ok', 'slept_seconds' => $seconds], JSON_UNESCAPED_UNICODE);

@@ -13,6 +13,10 @@ declare(strict_types=1);
  * короткий всплеск не должен будить дежурного.
  */
 
+require __DIR__ . '/../../vendor/autoload.php';
+
+use App\Log;
+
 header('Content-Type: application/json; charset=utf-8');
 
 $rate = (float) ($_GET['rate'] ?? 1);
@@ -20,8 +24,9 @@ $rate = max(0.0, min($rate, 1.0));
 
 if (mt_rand() / mt_getrandmax() < $rate) {
     http_response_code(500);
-    // error_log уходит в stderr php-fpm — пригодится, когда будем искать ошибку в логах
-    error_log('demo/error.php: simulated failure');
+    // Структурная запись с request_id — по нему ошибку найдём в Graylog
+    // вместе с соответствующей строкой access log nginx
+    Log::error('simulated failure', ['status' => 500]);
     echo json_encode(['status' => 'fail', 'error' => 'simulated failure'], JSON_UNESCAPED_UNICODE);
     exit;
 }

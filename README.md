@@ -187,6 +187,73 @@ UI — http://127.0.0.1:8088/. На Linux работает полноценно.
 (диски, файловые системы) может отсутствовать. Метрики по контейнерам при этом
 есть. Без профиля Prometheus просто не находит cAdvisor и не считает его упавшим.
 
+## Логи (Graylog)
+
+Централизованные логи — отдельный, самый тяжёлый уровень стенда
+(`compose.logging.yaml`): Graylog 7.2 + MongoDB 8.0 + OpenSearch 3.7
+(версии сверены с матрицей совместимости Graylog). Поднимается поверх
+мониторинга:
+
+```bash
+make logs-up     # база + мониторинг + Graylog (первый старт — 2–4 минуты)
+make logs-down   # убрать Graylog, мониторинг и база остаются
+```
+
+- Graylog — http://127.0.0.1:9000/ (`admin` / `admin`, из `.env`).
+- **Память:** Graylog (heap 1 ГБ) + OpenSearch (heap 512 МБ) + MongoDB —
+  около 2,5–3 ГБ сверх остального стенда. В Docker Desktop
+  (Settings → Resources) должно быть выделено не меньше 6 ГБ; на WSL2 —
+  `memory=6GB` или больше в `%UserProfile%\.wslconfig`.
+- **`vm.max_map_count`:** OpenSearch по умолчанию требует
+  `vm.max_map_count >= 262144` на хосте. Стенд обходит это настройкой
+  `node.store.allow_mmap=false` — работает с любым значением на Linux, macOS и
+  WSL2. Если захотите вернуть mmap (быстрее на больших объёмах):
+  `sudo sysctl -w vm.max_map_count=262144` на Linux, а на WSL2 —
+  `wsl -d docker-desktop sysctl -w vm.max_map_count=262144`.
+
+Как логи попадают в Graylog: nginx, php и postgres по-прежнему пишут в
+stdout/stderr, а `compose.logging.yaml` переключает их Docker logging driver на
+`gelf` — логи отправляет сам Docker daemon по UDP на `127.0.0.1:12201`.
+`docker compose logs` при этом продолжает работать (dual logging, Docker 20.10+).
+GELF input и pipeline разбора JSON создаёт одноразовый контейнер
+`graylog-init` (`docker/graylog/init.py`) через REST API — повторный запуск
+ничего не дублирует.
+
+Под логированием access log nginx пишется в JSON (`request_time`,
+`upstream_response_time`, `status`, `uri`, `request_id`), а pipeline Graylog
+раскладывает JSON-строки (nginx и приложения) на поля. Примеры запросов в
+поиске Graylog:
+
+| Запрос | Что найдёт |
+|---|---|
+| `status:>=500` | все ответы 5xx в access log |
+| `request_time:>1` | запросы медленнее секунды |
+| `log_level:error` | ошибки, записанные приложением (`App\Log`) |
+| `tag:*postgres* AND duration` | slow-log PostgreSQL (запросы > 500 мс) |
+| `<request_id>` | всё о конкретном запросе (см. ниже) |
+
+**Корреляция по request_id.** nginx присваивает каждому запросу id и отдаёт
+его в заголовке ответа `X-Request-Id`; тот же id получает PHP (в логах
+приложения) и PostgreSQL (как `application_name`, виден в slow-log как
+`app=<id>`). Попробуйте:
+
+```bash
+curl -si 'http://127.0.0.1:8080/demo/slow.php?seconds=1' | grep -i x-request-id
+```
+
+и вставьте id в поиск Graylog — найдутся строка access log nginx, запись
+приложения и строка slow-log PostgreSQL от этого запроса.
+
+Известная особенность: под драйвером `gelf` у самого первого медленного запроса
+после старта контейнера postgres теряется строка `LOG: duration ...` (строка
+`DETAIL` того же запроса доходит). Воспроизводится и в Graylog, и в
+`docker compose logs`, с драйвером json-file — нет. Последующие запросы
+логируются полностью, поэтому для демо делайте медленный запрос дважды.
+
+В Grafana под логированием появляется второй datasource — **Graylog (OpenSearch)**
+(встроенный плагин Elasticsearch, без скачивания плагинов). В Explore можно
+открыть рядом метрики и логи за один интервал.
+
 ## Linux / macOS / Windows (WSL2)
 
 `make init` подставляет в `.env` реальные UID/GID текущего пользователя, а
@@ -229,4 +296,6 @@ docs/runbooks/  — что делать по каждому алерту
 docker/nginx-exporter/ — тонкая обёртка над образом экспортера (wget для healthcheck)
 compose.yaml    — оркестрация; значения по умолчанию — в .env.example
 compose.monitoring.yaml — стек мониторинга, подключается через -f
+compose.logging.yaml — Graylog и доставка логов, подключается поверх мониторинга
+docker/graylog/ — init-скрипт настройки Graylog через API
 ```

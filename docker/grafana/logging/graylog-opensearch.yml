@@ -1,0 +1,24 @@
+# Datasource для логов Graylog — подключается только из compose.logging.yaml
+# (без Graylog он был бы сломанным). Grafana ходит прямо в OpenSearch, где Graylog
+# хранит сообщения, встроенным плагином Elasticsearch: OpenSearch совместим с ним
+# по API, отдельный плагин OpenSearch (его пришлось бы качать из интернета) не нужен.
+#
+# Зачем логи в Grafana, если есть UI Graylog: в Explore можно рядом открыть
+# график метрик и логи за тот же интервал — «вот всплеск 5xx, вот сами ошибки».
+# Полноценный поиск, разбор и алерты по логам — по-прежнему в Graylog.
+apiVersion: 1
+
+datasources:
+  - name: Graylog (OpenSearch)
+    type: elasticsearch
+    uid: graylog-opensearch
+    access: proxy
+    url: http://opensearch:9200
+    editable: false
+    jsonData:
+      # Индексы Graylog: graylog_0, graylog_1, ... (ротация раз в сутки)
+      index: "graylog_*"
+      timeField: timestamp
+      # Какие поля показывать как текст сообщения и уровень в режиме логов (Explore)
+      logMessageField: message
+      logLevelField: log_level

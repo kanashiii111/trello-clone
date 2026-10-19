@@ -9,6 +9,8 @@ services:
       - "127.0.0.1:${NGINX_PORT:-8080}:80"
     volumes:
       - ./docker/nginx/conf.d:/etc/nginx/conf.d:ro
+      # Сниппеты, которые подменяет compose.logging.yaml (формат access log)
+      - ./docker/nginx/snippets:/etc/nginx/snippets:ro
       # Тот же код, что и в php, тем же путём — иначе SCRIPT_FILENAME не совпадёт
       - ./app:/var/www/html:ro
     depends_on:

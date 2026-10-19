@@ -1,0 +1,15 @@
+# Заглушка. Datasource логов (Graylog/OpenSearch) нужен только вместе с Graylog,
+# поэтому compose.logging.yaml монтирует поверх этого файла
+# docker/grafana/logging/graylog-opensearch.yml. Сам файл нужен, чтобы было куда
+# монтировать: каталог provisioning смонтирован только для чтения, и Docker не может
+# создать в нём новую точку монтирования (тот же приём — docker/nginx/snippets)
+apiVersion: 1
+
+# Grafana хранит datasource в своей БД (том grafana-data), и простое исчезновение
+# файла его не удалит. Явно удаляем: после `make logs-down` в списке не останется
+# сломанного datasource. С подключённым логированием файл подменён — удаления нет
+deleteDatasources:
+  - name: Graylog (OpenSearch)
+    orgId: 1
+
+datasources: []

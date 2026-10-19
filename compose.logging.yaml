@@ -1,0 +1,162 @@
+# Централизованные логи: Graylog + MongoDB + OpenSearch.
+# Подключается поверх базы и мониторинга (`make logs-up`):
+#   docker compose -f compose.yaml -f compose.monitoring.yaml -f compose.logging.yaml up -d
+# Самый тяжёлый уровень стенда: две JVM (Graylog и OpenSearch) — нужно ~3 ГБ
+# свободной памяти для Docker. Требования и тонкости — в README, раздел «Логи».
+#
+# Зачем вообще отдельная система логов, если есть `docker compose logs`:
+# поиск по полям за любой период по всем сервисам сразу («все 5xx за час,
+# где request_time > 1»), а не grep по одному контейнеру, пока он жив.
+
+# Общие настройки доставки логов (YAML-якорь, подключается ниже через <<: *gelf-logging).
+# Логи контейнеров nginx/php/postgres забирает сам Docker daemon (logging driver gelf)
+# и шлёт в Graylog по UDP — приложению ничего про Graylog знать не нужно, оно
+# по-прежнему просто пишет в stdout/stderr.
+x-gelf-logging: &gelf-logging
+  logging:
+    driver: gelf
+    options:
+      # ВАЖНО: адрес резолвит Docker daemon, а не контейнер. Daemon не находится
+      # в docker-сети и не знает имени «graylog» — поэтому 127.0.0.1 и опубликованный
+      # порт. На Docker Desktop daemon живёт в виртуалке, и 127.0.0.1 там — тоже она,
+      # опубликованный порт работает и там
+      gelf-address: udp://127.0.0.1:${GRAYLOG_GELF_PORT:-12201}
+      # Имя контейнера в поле tag — по нему удобно фильтровать: tag:*nginx*
+      tag: "{{.Name}}"
+      # UDP не ждёт ответа: если Graylog лежит, логи теряются, но контейнер не
+      # тормозит и не падает. Для логов дев-стенда — правильный компромисс.
+      # «docker compose logs» при этом продолжает работать: начиная с Docker 20.10
+      # daemon дублирует логи в локальный кэш (dual logging)
+
+services:
+  # Базовые сервисы: только меняем доставку логов. Сами сервисы и их поведение
+  # не трогаем — поэтому это override, а не правка compose.yaml
+  nginx:
+    <<: *gelf-logging
+    volumes:
+      # access log в JSON вместо текстового (см. docker/nginx/logging/access_log.conf)
+      - ./docker/nginx/logging/access_log.conf:/etc/nginx/snippets/access_log.conf:ro
+  php:
+    <<: *gelf-logging
+  postgres:
+    <<: *gelf-logging
+
+  # Grafana из мониторинга получает второй datasource — логи из OpenSearch
+  grafana:
+    volumes:
+      - ./docker/grafana/logging/graylog-opensearch.yml:/etc/grafana/provisioning/datasources/graylog-opensearch.yml:ro
+
+  # Хранилище метаданных Graylog: пользователи, inputs, pipelines, настройки.
+  # Сами логи лежат не здесь, а в OpenSearch
+  mongodb:
+    # Graylog 7.2 поддерживает MongoDB 7.x–8.2.x (матрица совместимости Graylog)
+    image: mongo:8.0.34
+    volumes:
+      - mongodb-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  # Поисковый движок, где хранятся и индексируются сами сообщения логов
+  opensearch:
+    # Graylog 7.2 поддерживает OpenSearch до 3.7.x включительно — более новые 3.8+
+    # не берём, хоть они и вышли (матрица совместимости Graylog)
+    image: opensearchproject/opensearch:3.7.0
+    environment:
+      # Один узел без кластера; заодно отключает bootstrap-проверки «как в проде»
+      discovery.type: single-node
+      # Graylog сам создаёт индексы с нужными настройками — автосоздание мешало бы
+      action.auto_create_index: "false"
+      # Без TLS и паролей: только для локального стенда, порт наружу не публикуется
+      DISABLE_SECURITY_PLUGIN: "true"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      # Без mmap индекс читается чуть медленнее, зато не нужен vm.max_map_count=262144
+      # на хосте — одинаково заводится на Linux, macOS и WSL2 (подробнее в README)
+      node.store.allow_mmap: "false"
+      # Heap JVM: по умолчанию OpenSearch берёт 1 ГБ+, для учебного стенда хватит 512 МБ.
+      # Xms = Xmx — JVM не тратит время на расширение кучи
+      OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS 'http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow&timeout=2s' >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  graylog:
+    image: graylog/graylog:7.2.1
+    environment:
+      # Секрет для шифрования сессий и паролей; минимум 16 символов
+      GRAYLOG_PASSWORD_SECRET: ${GRAYLOG_PASSWORD_SECRET:-devops-course-dev-secret-0123456789}
+      # Graylog хранит не пароль admin, а его SHA-256 (как вычислить — в .env.example)
+      GRAYLOG_ROOT_PASSWORD_SHA2: ${GRAYLOG_ROOT_PASSWORD_SHA2:-8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918}
+      GRAYLOG_HTTP_BIND_ADDRESS: 0.0.0.0:9000
+      # Адрес, по которому UI открывает пользователь (иначе ссылки в UI будут внутренними)
+      GRAYLOG_HTTP_EXTERNAL_URI: http://127.0.0.1:${GRAYLOG_PORT:-9000}/
+      # Явно заданный OpenSearch — без этого Graylog 6+ при первом старте ждёт
+      # ручной настройки в UI (preflight) и предлагает Graylog Data Node
+      GRAYLOG_ELASTICSEARCH_HOSTS: http://opensearch:9200
+      GRAYLOG_MONGODB_URI: mongodb://mongodb:27017/graylog
+      # Один индекс на день, хранить 7 — для стенда больше не нужно
+      GRAYLOG_ROTATION_STRATEGY: time
+      GRAYLOG_ELASTICSEARCH_MAX_TIME_PER_INDEX: 1d
+      GRAYLOG_ELASTICSEARCH_MAX_NUMBER_OF_INDICES: "7"
+      GRAYLOG_SERVER_JAVA_OPTS: -Xms1g -Xmx1g
+      # Разрешаем запросы вида tag:*nginx* (* в начале слова). По умолчанию выключено:
+      # на больших объёмах такой поиск дорогой, но на учебном стенде удобнее
+      GRAYLOG_ALLOW_LEADING_WILDCARD_SEARCHES: "true"
+      # Без обращений в интернет: проверка версий и телеметрия
+      GRAYLOG_VERSIONCHECKS: "false"
+      GRAYLOG_TELEMETRY_ENABLED: "false"
+    volumes:
+      - graylog-data:/usr/share/graylog/data
+    ports:
+      # Web UI и REST API
+      - "127.0.0.1:${GRAYLOG_PORT:-9000}:9000"
+      # GELF UDP — сюда шлёт Docker daemon (см. gelf-address выше)
+      - "127.0.0.1:${GRAYLOG_GELF_PORT:-12201}:12201/udp"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+    healthcheck:
+      # lbstatus отвечает 200 только когда узел полностью запущен и принимает сообщения
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/api/system/lbstatus >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    restart: unless-stopped
+
+  # Одноразовая настройка через REST API: GELF input и pipeline разбора JSON.
+  # Исключение из правил стенда: это не сервис, а задача — отработала и вышла,
+  # поэтому без healthcheck и без restart: unless-stopped (иначе перезапускалась бы
+  # бесконечно). on-failure — повторить, если Graylog ещё не до конца готов
+  graylog-init:
+    image: python:3.14.8-alpine3.24
+    command: ["python", "/init/init.py"]
+    environment:
+      GRAYLOG_API: http://graylog:9000/api
+      GRAYLOG_USER: admin
+      GRAYLOG_PASSWORD: ${GRAYLOG_ROOT_PASSWORD:-admin}
+      # Вывод print() сразу в лог, без буферизации
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./docker/graylog:/init:ro
+    depends_on:
+      graylog:
+        condition: service_healthy
+    restart: on-failure:5
+
+volumes:
+  mongodb-data:
+  opensearch-data:
+  graylog-data:

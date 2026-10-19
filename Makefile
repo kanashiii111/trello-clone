@@ -9,15 +9,18 @@ endif
 
 .DEFAULT_GOAL := help
 .PHONY: help init build up down ps logs clean composer sh psql \
-	mon-up mon-down mon-ps mon-check mon-reload pg-monitoring
+	mon-up mon-down mon-ps mon-check mon-reload pg-monitoring \
+	logs-up logs-down
 
 # Базовый стек — только compose.yaml. Мониторинг подключается вторым файлом через -f:
 # compose склеивает их в одну модель, сервисы мониторинга попадают в ту же сеть
 COMPOSE     = docker compose
 COMPOSE_MON = docker compose -f compose.yaml -f compose.monitoring.yaml
+# Логи — следующий уровень поверх мониторинга: база + мониторинг + Graylog
+COMPOSE_LOG = $(COMPOSE_MON) -f compose.logging.yaml
 # Все файлы и все профили сразу — для down/clean. Иначе `make down` после `make mon-up`
 # оставил бы контейнеры мониторинга «сиротами» в сети, и удаление сети упало бы
-COMPOSE_ALL = $(COMPOSE_MON) --profile '*'
+COMPOSE_ALL = $(COMPOSE_LOG) --profile '*'
 
 help:
 	@echo "make init      — создать .env из .env.example (с UID/GID текущего пользователя)"
@@ -38,6 +41,10 @@ help:
 	@echo "make mon-check — проверить конфиги Prometheus и правила (promtool), blackbox, Alertmanager (amtool)"
 	@echo "make mon-reload — перечитать конфиги Prometheus и Alertmanager без рестарта"
 	@echo "make pg-monitoring — применить настройки мониторинга к уже существующей БД"
+	@echo ""
+	@echo "Логи (Graylog, нужно ~3 ГБ RAM для Docker):"
+	@echo "make logs-up   — база + мониторинг + Graylog, логи nginx/php/postgres уходят в Graylog"
+	@echo "make logs-down — убрать Graylog, мониторинг и база остаются"
 
 # Создаёт .env из примера и подставляет реальные UID/GID текущего пользователя,
 # чтобы файлы, которые php-fpm пишет в bind mount (например app/vendor), на Linux-хосте
@@ -88,9 +95,10 @@ mon-up:
 	$(COMPOSE_MON) up -d
 
 # Останавливаем только сервисы мониторинга, а не весь проект: база продолжает работать.
-# Список сервисов не дублируем: «все сервисы с мониторингом» минус «сервисы базы».
-# Затем `up` базы: compose.monitoring.yaml дополняет и базовый php (включает метрики),
-# и этот php надо пересоздать обратно в «базовом» виде
+# Список сервисов не дублируем: «все сервисы» минус «сервисы базы» (Graylog, если
+# поднят, тоже уходит — он уровнем выше мониторинга). Затем `up` базы: override-файлы
+# дополняют и базовые сервисы (метрики в php, logging driver), и их надо пересоздать
+# обратно в «базовом» виде
 mon-down:
 	$(COMPOSE_ALL) rm -sf $$($(COMPOSE_ALL) config --services | grep -vxF "$$($(COMPOSE) config --services)")
 	$(COMPOSE) up -d
@@ -120,3 +128,16 @@ pg-monitoring:
 	$(COMPOSE) up -d --wait postgres
 	$(COMPOSE) exec postgres sh /docker-entrypoint-initdb.d/02-monitoring.sh
 	@echo "Готово: пользователь экспортера и pg_stat_statements на месте"
+
+# --wait: дождаться healthy всех сервисов (Graylog стартует 1–2 минуты).
+# graylog-init — одноразовый, после настройки он завершается, поэтому его ждём отдельно
+logs-up:
+	$(COMPOSE_LOG) up -d --wait --wait-timeout 300 $$($(COMPOSE_LOG) config --services | grep -vx graylog-init)
+	$(COMPOSE_LOG) up graylog-init --exit-code-from graylog-init 2>&1 | grep 'graylog-init-1' || true
+	@echo "Graylog: http://127.0.0.1:$(or $(GRAYLOG_PORT),9000)/ (admin / пароль из .env)"
+
+# Убираем только Graylog и его хранилища; nginx/php/postgres пересоздаются
+# с обычным logging driver, мониторинг продолжает работать
+logs-down:
+	$(COMPOSE_LOG) rm -sf $$($(COMPOSE_LOG) config --services | grep -vxF "$$($(COMPOSE_MON) config --services)")
+	$(COMPOSE_MON) up -d
