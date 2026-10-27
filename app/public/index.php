@@ -6,18 +6,36 @@ require __DIR__ . '/../vendor/autoload.php';
 
 use App\Database;
 use App\Metrics;
+use App\Log;
 
-// Обработка формы добавления записи. Редиректим после POST (Post/Redirect/Get),
-// чтобы повторная отправка формы не происходила при обновлении страницы
+$requestMethod = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+$requestUri = $_SERVER['REQUEST_URI'] ?? '/';
+$requestBody = '';
+if ($requestMethod === 'POST' && isset($_POST['note'])) {
+    $requestBody = $_POST['note'] ?? '';
+}
+$requestId = $_SERVER['HTTP_X_REQUEST_ID'] ?? '';
+Log::info('Incoming HTTP request', [
+    'method' => $requestMethod,
+    'uri' => $requestUri,
+    'body' => $requestBody,
+    'request_id' => $requestId,
+]);
+
+ob_start();
+
+function h(string $value): string
+{
+    return htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['note'])) {
     try {
         $pdo = Database::connect();
         $stmt = $pdo->prepare('INSERT INTO demo (note) VALUES (:note)');
         $stmt->execute(['note' => (string) $_POST['note']]);
-        // Считаем только успешно сохранённые записи — после execute(), а не до
         Metrics::noteCreated();
     } catch (\Throwable $e) {
-        // Ошибка подключения/записи — статус БД и так будет виден на странице ниже
     }
     header('Location: /');
     exit;
@@ -39,10 +57,14 @@ try {
     $dbError = $e->getMessage();
 }
 
-function h(string $value): string
-{
-    return htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
-}
+$responseBody = ob_get_clean();
+$responseStatus = http_response_code() ?? 200;
+$logData = [
+    'request_id' => $requestId,
+    'status' => $responseStatus,
+    'body' => $responseBody,
+];
+Log::info('HTTP response', $logData);
 ?>
 <!DOCTYPE html>
 <html lang="ru">
@@ -109,3 +131,6 @@ function h(string $value): string
     </form>
 </body>
 </html>
+<?php
+
+echo $responseBody;

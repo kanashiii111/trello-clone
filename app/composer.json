@@ -6,7 +6,8 @@
         "php": ">=8.5",
         "ext-pdo_pgsql": "*",
         "ext-apcu": "*",
-        "promphp/prometheus_client_php": "^2.15"
+        "promphp/prometheus_client_php": "^2.15",
+        "monolog/monolog": "^3.12"
     },
     "autoload": {
         "psr-4": {
